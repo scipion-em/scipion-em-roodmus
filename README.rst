@@ -25,4 +25,5 @@ Development mode
 __________________________
 
 .. code-block::
-    git clone
+    git clone https://github.com/scipion-em/scipion-em-roodmus.git
+    scipion3 installp -p scipion-em-roodmus --devel
