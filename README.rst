@@ -1,6 +1,6 @@
-=======================
+==========================
 Roodmus plugin for Scipion
-=======================
+==========================
 
 Plugin to run `Roodmus <https://github.com/ccpem/roodmus>`_ software in Scipion.
 
