@@ -33,7 +33,7 @@ from enum import Enum
 
 from pyworkflow.constants import BETA
 import pyworkflow.protocol.params as params
-from pyworkflow.utils import Message
+from pyworkflow.utils import Message, copyFile, getExt
 from pyworkflow.object import Set
 
 from pwem.protocols import EMProtocol
@@ -77,12 +77,24 @@ class ProtSimulateMicrographs(EMProtocol):
                       help='Atomic model representing the topography (structure) that has been used during the '
                            'molecular dynamics simulation to generate different conformations (no solvent). If no'
                            'trajectory files have been specified, only the conformation represented by this model '
-                           'will be used to simulate the micrographs')
+                           'will be used to simulate the micrographs.')
+
+        form.addSection(label="Conformational sampling")
 
         form.addParam('trajFiles', params.PathParam,
-                      label='Path to trajectory files', important=True,
+                      label='Path to trajectory files (Optional - see help)', important=False,
+                      allowsNull=True,
                       help='Path to .dcd files obtained from a molecular dynamics simulation. This file is needed '
-                           'to simulate particles with varying conformations.')
+                           'to simulate particles with varying conformations. If not given, the simulated micrographs '
+                           'will only include the conformation represented by the topology file.')
+
+        form.addParam('numConf', params.IntParam,
+                      validators=[params.Positive],
+                      default=10,
+                      condition="trajFiles",
+                      label='Number of conformations to sample')
+
+        form.addSection(label="Micrograph simulation")
 
         form.addParam('numMic', params.IntParam,
                       validators=[params.Positive],
@@ -94,16 +106,20 @@ class ProtSimulateMicrographs(EMProtocol):
                       default=10,
                       label='Number of particles per micrograph', important=True)
 
-        form.addParam('numConf', params.IntParam,
-                      validators=[params.Positive],
-                      default=10,
-                      condition="trajFiles",
-                      label='Number of conformations to sample', important=True)
-
         form.addParam("pixelSize", params.FloatParam,
                       default=1.0,
                       validators=[params.Positive],
                       label="Micrograph pixel size")
+
+        form.addParam("nX", params.IntParam,
+                      default=1000,
+                      validators=[params.Positive],
+                      label="Micrograph size along X direction")
+
+        form.addParam("nY", params.IntParam,
+                      default=1000,
+                      validators=[params.Positive],
+                      label="Micrograph size along Y direction")
 
         form.addParallelSection(threads=4, mpi=0)
 
@@ -119,21 +135,32 @@ class ProtSimulateMicrographs(EMProtocol):
         topFile = self.topFile.get().getFileName()
         numConf = self.numConf.get()
 
-        args = (f"--topfile {topFile} --trajfiles_dir {trajFilesDir} --n_conformations {numConf} --tqdm "
-                f"--output_dir {self._getExtraPath('simulated_conformations')}")
+        if trajFilesDir:
+            args = (f"--topfile {topFile} --trajfiles_dir {trajFilesDir} --n_conformations {numConf} --tqdm "
+                    f"--output_dir {self._getExtraPath('simulated_conformations')}")
 
-        program = Plugin.getRoodmusProgram("conformations_sampling")
+            program = Plugin.getRoodmusProgram("conformations_sampling")
 
-        self.runJob(program, args)
+            self.runJob(program, args)
+        else:
+            os.mkdir(self._getExtraPath('simulated_conformations'))
+            copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
+                                                              f"conformation_000000.{getExt(topFile)}")))
 
     def ssimulateMicrographsStep(self):
         numMic = self.numMic.get()
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
+        nX = self.nX.get()
+        nY = self.nY.get()
+        centreX = round(0.5 * nX)
+        centreY = round(0.5 * nY)
 
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
                 f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
-                f"--pixel_size {pixelSize} --tqdm "
+                f"--pixel_size {pixelSize} --nx {nX} --ny {nY} --box_x {pixelSize * nX} --box_y {pixelSize * nY} "
+                f"--centre_x {pixelSize * centreX} --centre_y {pixelSize * centreY} "
+                f"--cuboid_length_x {pixelSize * nX} --cuboid_length_y {pixelSize * nY} --tqdm "
                 f"--nproc {self.numberOfThreads.get()}")
 
         if self.usesGpu():
@@ -169,7 +196,7 @@ class ProtSimulateMicrographs(EMProtocol):
 
         if self.isFinished():
             numMic = self.simMics.getSize()
-            numPart = self.numPart.get()
+            numPart = self.numPart.get() if self.trajFiles.get() else 1
             pixelSize = self.pixelSize.get()
             numConf = self.numConf.get()
             summary.append(f"A total of {numMic} micrographs have been generated with the following metadata: ")
