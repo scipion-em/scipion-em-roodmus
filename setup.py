@@ -34,11 +34,6 @@ setup(
     author='David Herreros',  # Optional
     author_email='dherreros@cnb.csic.es',  # Optional
     keywords='scipion cryoem imageprocessing scipion-3.0 datasimulation',  # Optional
-    classifiers=[  # Optional
-        'Development Status :: 2 - Beta',
-        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
-        'Programming Language :: Python :: 3'
-    ],
     packages=find_packages(),
     install_requires=[requirements],
     project_urls={  # Optional
