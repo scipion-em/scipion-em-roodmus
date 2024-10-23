@@ -283,6 +283,7 @@ class ProtSimulateMicrographs(EMProtocol):
         outputCoords.setBoxSize(int(self.nX.get() / 10))
 
         self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
+        self._defineCtfRelation(outputMics, outputCTFs)
 
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
