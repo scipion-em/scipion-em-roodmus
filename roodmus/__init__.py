@@ -30,7 +30,7 @@ import pwem
 
 from roodmus.constants import *
 
-__version__ = "1.0.0"  # plugin version
+__version__ = "1.0.1"  # plugin version
 _logo = "ccpem_logo.png"
 _references = ['roodmus2024']
 
