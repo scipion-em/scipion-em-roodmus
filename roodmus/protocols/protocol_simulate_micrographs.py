@@ -52,6 +52,7 @@ class ProtSimulateMicrographs(EMProtocol):
     """
     _label = 'simulate micrographs'
     _devStatus = BETA
+    _micModel = ["talos", "krios"]
     _possibleOutputs = outputs
 
     # -------------------------- DEFINE param functions ----------------------
@@ -96,30 +97,64 @@ class ProtSimulateMicrographs(EMProtocol):
 
         form.addSection(label="Micrograph simulation")
 
-        form.addParam('numMic', params.IntParam,
+        group = form.addGroup("Micrograph parameters")
+
+        group.addParam('numMic', params.IntParam,
                       validators=[params.Positive],
                       default=10,
                       label='Number of micrographs to simulate', important=True)
 
-        form.addParam('numPart', params.IntParam,
+        group.addParam('numPart', params.IntParam,
                       validators=[params.Positive],
                       default=10,
                       label='Number of particles per micrograph', important=True)
 
-        form.addParam("pixelSize", params.FloatParam,
+        group.addParam("pixelSize", params.FloatParam,
                       default=1.0,
                       validators=[params.Positive],
                       label="Micrograph pixel size")
 
-        form.addParam("nX", params.IntParam,
+        group.addParam("nX", params.IntParam,
                       default=1000,
                       validators=[params.Positive],
                       label="Micrograph size along X direction")
 
-        form.addParam("nY", params.IntParam,
+        group.addParam("nY", params.IntParam,
                       default=1000,
                       validators=[params.Positive],
                       label="Micrograph size along Y direction")
+
+        group = form.addGroup("Micrograph beam")
+
+        group.addParam('dose', params.FloatParam,
+                      default=45.0,
+                      label='Electron dose (electrons per square angstrom)')
+
+        group = form.addGroup("Ice parameters")
+
+        group.addParam('iceThickness', params.FloatParam,
+                      default=500,
+                      label='Ice thickness (angstrom)')
+
+        group = form.addGroup("Microscope parameters")
+
+        group.addParam('micModel', params.EnumParam,
+                      choices=self._micModel,
+                      display=params.EnumParam.DISPLAY_HLIST,
+                      default=0,
+                      label='Microscope model')
+
+        form.addSection(label="Microscope lens")
+
+        form.addParam('defocusAverage', params.FloatParam,
+                      default=-15000,
+                      label='Average defocus (angstrom)',
+                      help="In CryoEM, this value is negative (underfocus). Positive values (overfocus) are also "
+                           "allowed")
+
+        form.addParam('defocusSTD', params.FloatParam,
+                      default=5000,
+                      label='Defocus standard deviation (angstrom)')
 
         form.addParallelSection(threads=4, mpi=0)
 
@@ -127,7 +162,7 @@ class ProtSimulateMicrographs(EMProtocol):
     def _insertAllSteps(self):
         # Insert processing steps
         self._insertFunctionStep(self.sampleConformationsStep)
-        self._insertFunctionStep(self.ssimulateMicrographsStep)
+        self._insertFunctionStep(self.simulateMicrographsStep)
         self._insertFunctionStep(self.createOutputStep)
 
     def sampleConformationsStep(self):
@@ -147,21 +182,26 @@ class ProtSimulateMicrographs(EMProtocol):
             copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
                                                               f"conformation_000000.{getExt(topFile)}")))
 
-    def ssimulateMicrographsStep(self):
+    def simulateMicrographsStep(self):
         numMic = self.numMic.get()
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
+        iceThickness = self.iceThickness.get()
         nX = self.nX.get()
         nY = self.nY.get()
         centreX = round(0.5 * nX)
         centreY = round(0.5 * nY)
+        centreZ = round(0.5 * iceThickness)
 
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
                 f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
-                f"--pixel_size {pixelSize} --nx {nX} --ny {nY} --box_x {pixelSize * nX} --box_y {pixelSize * nY} "
-                f"--centre_x {pixelSize * centreX} --centre_y {pixelSize * centreY} "
-                f"--cuboid_length_x {pixelSize * nX} --cuboid_length_y {pixelSize * nY} --tqdm "
-                f"--nproc {self.numberOfThreads.get()}")
+                f"--pixel_size {pixelSize} --nx {nX} --ny {nY} --box_x {pixelSize * nX} "
+                f"--box_y {pixelSize * nY} --box_z {iceThickness} --centre_x {pixelSize * centreX} "
+                f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
+                f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
+                f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
+                f"--energy {self.energy.get()} --c_10 {self.defocusAverage.get()} "
+                f"--c_10_stddev {self.defocusSTD.get()} --model {self._micModel[self.micModel.get()]}")
 
         if self.usesGpu():
             gpuID = [str(elem) for elem in self.getGpuList()][0]
