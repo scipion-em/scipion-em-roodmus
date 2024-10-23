@@ -52,6 +52,10 @@ class TestRoodmusBase(BaseTest):
         self.launchProtocol(protSimMic)
         self.assertIsNotNone(protSimMic.simMics,
                              "There was a problem with simple initial model protocol")
+        self.assertIsNotNone(protSimMic.trueCTFs,
+                             "There was a problem with simple initial model protocol")
+        self.assertIsNotNone(protSimMic.trueCoords,
+                             "There was a problem with simple initial model protocol")
 
 
 class TestRoodmus(TestRoodmusBase):
