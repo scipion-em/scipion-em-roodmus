@@ -28,16 +28,18 @@
 
 import os
 from glob import glob
+import yaml
+from scipy.spatial.transform import Rotation as R
 
 from enum import Enum
 
 from pyworkflow.constants import BETA
 import pyworkflow.protocol.params as params
-from pyworkflow.utils import Message, copyFile, getExt
+from pyworkflow.utils import Message, copyFile, getExt, replaceExt
 from pyworkflow.object import Set
 
 from pwem.protocols import EMProtocol
-from pwem.objects import Micrograph, SetOfMicrographs
+from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates
 
 from roodmus import Plugin
 
@@ -123,6 +125,18 @@ class ProtSimulateMicrographs(EMProtocol):
                       default=1000,
                       validators=[params.Positive],
                       label="Micrograph size along Y direction")
+
+        group.addParam("mag", params.FloatParam,
+                       default=50000,
+                       experLevel=params.LEVEL_ADVANCED,
+                       validators=[params.Positive],
+                       label="Magnification rate")
+
+        group.addParam("q0", params.FloatParam,
+                       default=0.07,
+                       experLevel=params.LEVEL_ADVANCED,
+                       validators=[params.Positive],
+                       label="Amplitude contrast")
 
         group = form.addGroup("Micrograph beam")
 
@@ -216,16 +230,59 @@ class ProtSimulateMicrographs(EMProtocol):
     def createOutputStep(self):
         pixelSize = self.pixelSize.get()
         outputMics = self._createSetOfMicrographs()
+        outputCTFs = self._createSetOfCTF()
+        outputCoords = self._createSetOfCoordinates(outputMics)
+        outputMics.setSamplingRate(pixelSize)
 
+        micId = 1
         for micFile in glob(self._getExtraPath(os.path.join('simulated_mics'), "*.mrc")):
+            with open(replaceExt(micFile, "yaml")) as stream:
+                yaml_contents = yaml.safe_load(stream)
+
+            # Output 1: Micrographs
+            aquisition = Acquisition()
+            aquisition.setMagnification(self.mag.get())
+            aquisition.setVoltage(yaml_contents["microscope"]["beam"]["energy"])
+            aquisition.setDosePerFrame(yaml_contents["microscope"]["beam"]["electrons_per_angstrom"])
+            aquisition.setSphericalAberration(yaml_contents["microscope"]["lens"]["c_c"])
+            aquisition.setAmplitudeContrast(self.q0.get())
             outputMic = Micrograph()
             outputMic.setFileName(micFile)
             outputMic.setSamplingRate(pixelSize)
+            outputMic.setAcquisition(aquisition)
+            outputMic.setObjId(micId)
+            outputMic.setMicName(f"mic_{micId}")
+
+            # Output 2: CTFs
+            ctf = CTFModel()
+            ctf.setMicrograph(outputMic)
+            ctf.setDefocusU(yaml_contents["microscope"]["lens"]["c_10"])
+            ctf.setDefocusV(yaml_contents["microscope"]["lens"]["c_10"])
+            ctf.setDefocusAngle(yaml_contents["microscope"]["lens"]["phi_12"])
+            # outputMic.setCTF(ctf)
+            outputCTFs.append(ctf)
+
+            # Output 3: Coordinates
+            for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
+                # mat = R.from_euler(angles=pick["orientations"], seq="ZYZ", degrees=False).as_matrix()
+                coord = Coordinate()
+                coord.setX(int(round(pick["position"][0])))
+                coord.setY(int(round(pick["position"][1])))
+                coord.setMicrograph(outputMic)
+                coord.setMicName(outputMic.getMicName())
+                coord.setMicId(outputMic.getObjId())
+                outputCoords.append(coord)
+
             outputMics.append(outputMic)
+            outputMics.setAcquisition(aquisition)
 
-        outputMics.setSamplingRate(pixelSize)
+            micId += 1
 
-        self._defineOutputs(simMics=outputMics)
+        outputCTFs.setMicrographs(outputMics)
+        outputCoords.setMicrographs(outputMics)
+        outputCoords.setBoxSize(int(self.nX.get() / 10))
+
+        self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
 
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
