@@ -214,8 +214,8 @@ class ProtSimulateMicrographs(EMProtocol):
                 f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
                 f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
                 f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
-                f"--energy {self.energy.get()} --c_10 {self.defocusAverage.get()} "
-                f"--c_10_stddev {self.defocusSTD.get()} --model {self._micModel[self.micModel.get()]}")
+                f"--c_10 {self.defocusAverage.get()} --c_10_stddev {self.defocusSTD.get()} "
+                f"--model {self._micModel[self.micModel.get()]}")
 
         if self.usesGpu():
             gpuID = [str(elem) for elem in self.getGpuList()][0]
