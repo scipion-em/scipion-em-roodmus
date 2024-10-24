@@ -256,8 +256,8 @@ class ProtSimulateMicrographs(EMProtocol):
             # Output 2: CTFs
             ctf = CTFModel()
             ctf.setMicrograph(outputMic)
-            ctf.setDefocusU(yaml_contents["microscope"]["lens"]["c_10"])
-            ctf.setDefocusV(yaml_contents["microscope"]["lens"]["c_10"])
+            ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"])
+            ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"])
             ctf.setDefocusAngle(yaml_contents["microscope"]["lens"]["phi_12"])
             # outputMic.setCTF(ctf)
             outputCTFs.append(ctf)
