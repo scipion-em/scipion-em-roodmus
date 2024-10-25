@@ -27,12 +27,30 @@
 import os
 import pyworkflow.utils as pwutils
 import pwem
+import subprocess
 
 from roodmus.constants import *
 
 __version__ = "1.0.3"  # plugin version
 _logo = "ccpem_logo.png"
 _references = ['roodmus2024']
+
+# For the installation
+driver_cuda_compatibility = {
+    "465": "11.3.0",
+    "470": "11.4.0",
+    "495": "11.5.0",
+    "510": "11.6.0",
+    "515": "11.7.0",
+    "520": "11.8.0",
+    "525": "12.0.0",
+    "530": "12.1.0",
+    "535": "12.2.0",
+    "540": "12.3.0",
+    "545": "12.4.0",
+    "550": "12.5.0",
+    "555": "12.6.0",  # Expected or approximated for newer releases
+}
 
 
 class Plugin(pwem.Plugin):
@@ -66,8 +84,28 @@ class Plugin(pwem.Plugin):
     def defineBinaries(cls, env):
 
         def getRoodmusInstallationCommands():
+            nvidiaNVCC = False
+            try:
+                nvidiaDriverVer = subprocess.Popen(["nvidia-smi",
+                                                    "--query-gpu=driver_version",
+                                                    "--format=csv,noheader"],
+                                                   env=cls.getEnviron(),
+                                                   stdout=subprocess.PIPE
+                                                   ).stdout.read().decode('utf-8').split(".")[0]
+                nvidiaNVCC = subprocess.run(['nvcc', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except (ValueError, TypeError, FileNotFoundError):
+                print("NVCC not found in your system, installing it in the environment...")
+
             commands = cls.getCondaActivationCmd() + " "
-            commands += f"conda create -n roodmus-{V1} python=3.10 conda-forge::fftw -y && "
+            if nvidiaNVCC:
+                commands += f"conda create -n roodmus-{V1} -c conda-forge fftw python=3.10 -y && "
+            else:
+                compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
+                                       drv <= nvidiaDriverVer]
+                cudaVersion = max(compatible_versions)
+                commands += (
+                    f"conda create -n roodmus-{V1} -c conda-forge -c nvidia/label/cuda-{cudaVersion} python=3.10 "
+                    f"fftw cuda={cudaVersion} -y && ")
             commands += f"conda activate roodmus-{V1} && "
             commands += "pip install roodmus && pip install openmm && "
             commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
