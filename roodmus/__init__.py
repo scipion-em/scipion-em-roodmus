@@ -98,7 +98,7 @@ class Plugin(pwem.Plugin):
 
             commands = cls.getCondaActivationCmd() + " "
             if nvidiaNVCC:
-                commands += f"conda create -n roodmus-{V1} -c conda-forge fftw python=3.10 -y && "
+                commands += f"conda create -n roodmus-{V1} -c conda-forge fftw gcc=11.4.0 python=3.10 -y && "
             else:
                 compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
                                        drv <= nvidiaDriverVer]
