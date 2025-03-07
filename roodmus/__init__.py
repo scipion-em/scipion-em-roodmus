@@ -105,7 +105,7 @@ class Plugin(pwem.Plugin):
                 cudaVersion = max(compatible_versions)
                 commands += (
                     f"conda create -n roodmus-{V1} -c conda-forge -c nvidia/label/cuda-{cudaVersion} python=3.10 "
-                    f"fftw cuda={cudaVersion} -y && ")
+                    f"fftw cuda={cudaVersion} cxx-compiler -y && ")
             commands += f"conda activate roodmus-{V1} && "
             commands += "pip install roodmus && pip install openmm && "
             commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
