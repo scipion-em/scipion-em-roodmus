@@ -97,15 +97,16 @@ class Plugin(pwem.Plugin):
                 print("NVCC not found in your system, installing it in the environment...")
 
             commands = cls.getCondaActivationCmd() + " "
-            if nvidiaNVCC:
-                commands += f"conda create -n roodmus-{V1} -c conda-forge fftw gcc=11.4.0 python=3.10 -y && "
-            else:
-                compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
-                                       drv <= nvidiaDriverVer]
-                cudaVersion = max(compatible_versions)
-                commands += (
-                    f"conda create -n roodmus-{V1} -c conda-forge -c nvidia/label/cuda-{cudaVersion} python=3.10 "
-                    f"fftw cuda={cudaVersion} cxx-compiler -y && ")
+            # if nvidiaNVCC:
+            #     commands += f"conda create -n roodmus-{V1} -c conda-forge fftw gcc=11.4.0 python=3.10 -y && "
+            # else:
+            compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
+                                   drv <= nvidiaDriverVer]
+            cudaVersion = max(compatible_versions)
+            commands += (
+                f"conda create -n roodmus-{V1} -c conda-forge -c nvidia/label/cuda-{cudaVersion} python=3.10 "
+                f"fftw cuda={cudaVersion} gcc=11.4.0 cxx-compiler -y && ")
+            commands += f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/:$LD_LIBRARY_PATH && "
             commands += f"conda activate roodmus-{V1} && "
             commands += "pip install roodmus && pip install openmm && "
             commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
