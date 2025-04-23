@@ -29,6 +29,8 @@
 import os
 from glob import glob
 import yaml
+import numpy as np
+import subprocess
 from scipy.spatial.transform import Rotation as R
 
 from enum import Enum
@@ -37,9 +39,11 @@ from pyworkflow.constants import BETA
 import pyworkflow.protocol.params as params
 from pyworkflow.utils import Message, copyFile, getExt, replaceExt
 from pyworkflow.object import Set
+from pyworkflow.protocol import STEPS_PARALLEL
 
 from pwem.protocols import EMProtocol
-from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates
+from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates, Transform
+import pyworkflow.utils as pwutils
 
 from roodmus import Plugin
 
@@ -56,6 +60,7 @@ class ProtSimulateMicrographs(EMProtocol):
     _devStatus = BETA
     _micModel = ["talos", "krios"]
     _possibleOutputs = outputs
+    stepsExecutionMode = STEPS_PARALLEL
 
     # -------------------------- DEFINE param functions ----------------------
     def _defineParams(self, form):
@@ -170,14 +175,27 @@ class ProtSimulateMicrographs(EMProtocol):
                       default=5000,
                       label='Defocus standard deviation (angstrom)')
 
+        form.addParam('astigmatism', params.NumericListParam,
+                      default="10 80",
+                      label='The 2-fold astigmatism (angstrom)',
+                      help="You can provide here a single value (all micrographs will have the same astigmatism) "
+                           "or two values separated by a white spaces (each micrograph will have a random "
+                           "astigmatism taken within the range defined by the two numbers provided).")
+
         form.addParallelSection(threads=4, mpi=0)
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
         # Insert processing steps
-        self._insertFunctionStep(self.sampleConformationsStep)
-        self._insertFunctionStep(self.simulateMicrographsStep)
-        self._insertFunctionStep(self.createOutputStep)
+        deps_preprocessing = self._insertFunctionStep(self.sampleConformationsStep, prerequisites=[])
+
+        deps_simulate = []
+        needsGPU = self.usesGpu()
+        for idm in range(self.numMic.get()):
+            deps_simulate.append(self._insertFunctionStep(self.simulateMicrographsStep,
+                                                          idm, prerequisites=deps_preprocessing, needsGPU=needsGPU))
+
+        self._insertFunctionStep(self.createOutputStep, prerequisites=deps_simulate)
 
     def sampleConformationsStep(self):
         trajFilesDir = self.trajFiles.get()
@@ -196,8 +214,7 @@ class ProtSimulateMicrographs(EMProtocol):
             copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
                                                               f"conformation_000000.{getExt(topFile)}")))
 
-    def simulateMicrographsStep(self):
-        numMic = self.numMic.get()
+    def simulateMicrographsStep(self, idm):
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
         iceThickness = self.iceThickness.get()
@@ -206,26 +223,40 @@ class ProtSimulateMicrographs(EMProtocol):
         centreX = round(0.5 * nX)
         centreY = round(0.5 * nY)
         centreZ = round(0.5 * iceThickness)
+        astigmatism = list(map(float, self.astigmatism.get().split(' ')))
+        phi_12 = 0.0 if min(astigmatism) == max(astigmatism) == 0.0 else np.random.uniform(0, np.pi)
+        astigmatism = np.random.uniform(min(astigmatism), max(astigmatism))
 
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
-                f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
+                f"--mrc_dir {self._getExtraPath(f'simulated_mic_{idm:05}')} -n 1 "
                 f"--pixel_size {pixelSize} --nx {nX} --ny {nY} --box_x {pixelSize * nX} "
                 f"--box_y {pixelSize * nY} --box_z {iceThickness} --centre_x {pixelSize * centreX} "
                 f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
                 f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
-                f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
-                f"--c_10 {self.defocusAverage.get()} --c_10_stddev {self.defocusSTD.get()} ")
+                f"--nproc 20 --electrons_per_angstrom {self.dose.get()} "
+                f"--c_10 {self.defocusAverage.get()} --c_10_stddev {self.defocusSTD.get()} "
+                f"--c_12 {-astigmatism} --phi_12 {phi_12} ")
                 # f"--model {self._micModel[self.micModel.get()]}")  # FIXME: Currently a bug in Roodmus, to be added when fixed
 
         if self.usesGpu():
-            gpuID = [str(elem) for elem in self.getGpuList()][0]
-            args += f' --device "gpu" --gpu_id {gpuID}'
+            args += f' --device gpu --gpu_id  %(GPU)s'
         else:
-            args += f' --device "cpu"'
+            args += f' --device cpu'
 
         program = Plugin.getRoodmusProgram("run_parakeet")
 
-        self.runJob(program, args)
+        for currNumPart in range(numPart, 1, -10):
+            args_with_particles = args +  f' -m {currNumPart}'
+            try:
+                self.runJob(program, args_with_particles)
+                return
+            except subprocess.CalledProcessError as e:
+                pwutils.cleanPattern(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', "*")))
+                if currNumPart - 10 > 0:
+                    print(pwutils.yellowStr(f"Could not place the specified number of particles ({numPart}) in "
+                                            f"micrograph #{idm}. Retrying Roodmus with {currNumPart - 10} particles"), flush=True)
+                else:
+                    print(pwutils.redStr(e), flush=True)
 
     def createOutputStep(self):
         pixelSize = self.pixelSize.get()
@@ -235,52 +266,68 @@ class ProtSimulateMicrographs(EMProtocol):
         outputMics.setSamplingRate(pixelSize)
 
         micId = 1
-        for micFile in glob(self._getExtraPath(os.path.join('simulated_mics'), "*.mrc")):
-            with open(replaceExt(micFile, "yaml")) as stream:
-                yaml_contents = yaml.safe_load(stream)
+        for idm in range(self.numMic.get()):
+            for micFile in glob(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), "*.mrc")):
+                with open(replaceExt(micFile, "yaml")) as stream:
+                    yaml_contents = yaml.safe_load(stream)
 
-            # Output 1: Micrographs
-            aquisition = Acquisition()
-            aquisition.setMagnification(self.mag.get())
-            aquisition.setVoltage(yaml_contents["microscope"]["beam"]["energy"])
-            aquisition.setDosePerFrame(yaml_contents["microscope"]["beam"]["electrons_per_angstrom"])
-            aquisition.setSphericalAberration(yaml_contents["microscope"]["lens"]["c_c"])
-            aquisition.setAmplitudeContrast(self.q0.get())
-            outputMic = Micrograph()
-            outputMic.setFileName(micFile)
-            outputMic.setSamplingRate(pixelSize)
-            outputMic.setAcquisition(aquisition)
-            outputMic.setObjId(micId)
-            outputMic.setMicName(f"mic_{micId}")
+                # Rename file
+                if idm > 0:
+                    newMicFile = os.path.join(os.path.dirname(micFile), f"{idm:06}.mrc")
+                    pwutils.moveFile(micFile, newMicFile)
+                else:
+                    newMicFile = micFile
 
-            # Output 2: CTFs
-            ctf = CTFModel()
-            ctf.setMicrograph(outputMic)
-            ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"])
-            ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"])
-            ctf.setDefocusAngle(yaml_contents["microscope"]["lens"]["phi_12"])
-            # outputMic.setCTF(ctf)
-            outputCTFs.append(ctf)
+                # Output 1: Micrographs
+                aquisition = Acquisition()
+                aquisition.setMagnification(self.mag.get())
+                aquisition.setVoltage(yaml_contents["microscope"]["beam"]["energy"])
+                aquisition.setDosePerFrame(yaml_contents["microscope"]["beam"]["electrons_per_angstrom"])
+                aquisition.setSphericalAberration(yaml_contents["microscope"]["lens"]["c_c"])
+                aquisition.setAmplitudeContrast(self.q0.get())
+                outputMic = Micrograph()
+                outputMic.setFileName(newMicFile)
+                outputMic.setSamplingRate(pixelSize)
+                outputMic.setAcquisition(aquisition)
+                outputMic.setObjId(micId)
+                outputMic.setMicName(f"mic_{micId}")
 
-            # Output 3: Coordinates
-            for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
-                # mat = R.from_euler(angles=pick["orientations"], seq="ZYZ", degrees=False).as_matrix()
-                coord = Coordinate()
-                coord.setX(int(round(pick["position"][0])))
-                coord.setY(int(round(pick["position"][1])))
-                coord.setMicrograph(outputMic)
-                coord.setMicName(outputMic.getMicName())
-                coord.setMicId(outputMic.getObjId())
-                outputCoords.append(coord)
+                # Output 2: CTFs
+                ctf = CTFModel()
+                ctf.setMicrograph(outputMic)
+                ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"] + yaml_contents["microscope"]["lens"]["c_12"])
+                ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"] - yaml_contents["microscope"]["lens"]["c_12"])
+                ctf.setDefocusAngle(np.rad2deg(yaml_contents["microscope"]["lens"]["phi_12"]))
+                # outputMic.setCTF(ctf)
+                outputCTFs.append(ctf)
 
-            outputMics.append(outputMic)
-            outputMics.setAcquisition(aquisition)
+                # Output 3: Coordinates
+                for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
+                    algn = R.from_euler(angles=pick["orientation"], seq="ZYZ", degrees=False).as_matrix()
+                    mat = np.eye(4)
+                    mat[:3, :3] = algn
+                    tr = Transform()
+                    tr.setMatrix(mat)
+                    coord = Coordinate()
+                    coord.setX(int(round(pick["position"][0])))
+                    coord.setY(int(round(pick["position"][1])))
+                    coord.setMicrograph(outputMic)
+                    coord.setMicName(outputMic.getMicName())
+                    coord.setMicId(outputMic.getObjId())
+                    coord.transformation = tr
+                    outputCoords.append(coord)
 
-            micId += 1
+                outputMics.append(outputMic)
+                outputMics.setAcquisition(aquisition)
+
+                micId += 1
 
         outputCTFs.setMicrographs(outputMics)
         outputCoords.setMicrographs(outputMics)
         outputCoords.setBoxSize(int(self.nX.get() / 10))
+
+        if outputMics.getSize() == 0:
+            raise ValueError(pwutils.redStr("No micrographs has been generated by Roodmus. Exiting..."))
 
         self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
         self._defineCtfRelation(outputMics, outputCTFs)
@@ -294,7 +341,7 @@ class ProtSimulateMicrographs(EMProtocol):
 
         if self.isFinished():
             numMic = self.simMics.getSize()
-            numPart = self.numPart.get() if self.trajFiles.get() else 1
+            numPart = self.numPart.get()
             pixelSize = self.pixelSize.get()
             numConf = self.numConf.get()
             summary.append(f"A total of {numMic} micrographs have been generated with the following metadata: ")
