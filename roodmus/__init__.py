@@ -108,10 +108,9 @@ class Plugin(pwem.Plugin):
                 f"fftw cuda={cudaVersion} gcc=11.4.0 cxx-compiler -y && ")
             commands += f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/:$LD_LIBRARY_PATH && "
             commands += f"conda activate roodmus-{V1} && "
-            commands += "pip install roodmus && pip install openmm && "
             commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
                          "cd ccpem-pipeliner && git checkout bedbedbe183ad497dbaa82a638f210d316ba9bae && "
-                         "pip install -e . && cd .. && ")
+                         "pip install . git+https://github.com/ccpem/roodmus@jgreer/parakeetv0.6 openmm python-parakeet==0.6.6 && cd .. && ")
             commands += "touch roodmus_installed"
             return commands
 
