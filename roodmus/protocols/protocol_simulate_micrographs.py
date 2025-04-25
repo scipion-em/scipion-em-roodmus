@@ -45,6 +45,8 @@ from pwem.protocols import EMProtocol
 from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates, Transform
 import pyworkflow.utils as pwutils
 
+from xmipp_metadata.image_handler import ImageHandler
+
 from roodmus import Plugin
 
 
@@ -244,11 +246,18 @@ class ProtSimulateMicrographs(EMProtocol):
             args += f' --device cpu'
 
         program = Plugin.getRoodmusProgram("run_parakeet")
+        program_ctf = Plugin.getParakeetProgram("ctf")
 
         for currNumPart in range(numPart, 1, -10):
             args_with_particles = args +  f' -m {currNumPart}'
             try:
                 self.runJob(program, args_with_particles)
+                config_file = self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', f'{0:06}.yaml'))
+                ctf_file = self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', f'{0:06}_ctf.mrc'))
+                args_ctf = f'-c {config_file} -o {ctf_file}'
+                self.runJob(program_ctf, args_ctf)
+                ctf = ImageHandler().read(ctf_file).getData()
+                ImageHandler().write(ctf, ctf_file, overwrite=True)
                 return
             except subprocess.CalledProcessError as e:
                 pwutils.cleanPattern(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', "*")))
@@ -267,7 +276,7 @@ class ProtSimulateMicrographs(EMProtocol):
 
         micId = 1
         for idm in range(self.numMic.get()):
-            for micFile in glob(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), "*.mrc")):
+            for micFile in glob(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), "*[!ctf].mrc")):
                 with open(replaceExt(micFile, "yaml")) as stream:
                     yaml_contents = yaml.safe_load(stream)
 
@@ -295,6 +304,7 @@ class ProtSimulateMicrographs(EMProtocol):
                 # Output 2: CTFs
                 ctf = CTFModel()
                 ctf.setMicrograph(outputMic)
+                ctf.setPsdFile(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), f"{0:06}_ctf.mrc"))
                 ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"] + yaml_contents["microscope"]["lens"]["c_12"])
                 ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"] - yaml_contents["microscope"]["lens"]["c_12"])
                 ctf.setDefocusAngle(np.rad2deg(yaml_contents["microscope"]["lens"]["phi_12"]))
