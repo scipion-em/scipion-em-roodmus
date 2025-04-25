@@ -1,3 +1,4 @@
 scipion-pyworkflow
 scipion-em
 pyyaml
+xmipp_metadata
