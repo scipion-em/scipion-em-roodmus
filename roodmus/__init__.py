@@ -77,6 +77,11 @@ class Plugin(pwem.Plugin):
         return cmd
 
     @classmethod
+    def getParakeetProgram(cls, program):
+        cmd = '%s %s && parakeet.simulate.%s' % (cls.getCondaActivationCmd(), cls.getEnvActivation(), program)
+        return cmd
+
+    @classmethod
     def getCommand(cls, program, args):
         return cls.getRoodmusProgram(program) + args
 
