@@ -109,8 +109,8 @@ class Plugin(pwem.Plugin):
                                    drv <= nvidiaDriverVer]
             cudaVersion = max(compatible_versions)
             commands += (
-                f"conda create -n roodmus-{V1} -c nvidia/label/cuda-{cudaVersion} -c conda-forge -c anaconda python=3.10 "
-                f"fftw cuda={cudaVersion} gcc=11.4.0 cxx-compiler -y && ")
+                f"conda create -n roodmus-{V1} -c conda-forge -c anaconda python=3.10 "
+                f"fftw cudatoolkit gcc=11.4.0 cxx-compiler -y && ")
             commands += f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/:$LD_LIBRARY_PATH && "
             commands += f"conda activate roodmus-{V1} && "
             commands += f"export CUDACXX=$CONDA_PREFIX/bin/nvcc && export CXX=$CONDA_PREFIX/bin/g++ && "
