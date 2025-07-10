@@ -102,22 +102,34 @@ class Plugin(pwem.Plugin):
                 print("NVCC not found in your system, installing it in the environment...")
 
             commands = cls.getCondaActivationCmd() + " "
-            # if nvidiaNVCC:
-            #     commands += f"conda create -n roodmus-{V1} -c conda-forge fftw gcc=11.4.0 python=3.10 -y && "
-            # else:
-            compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
-                                   drv <= nvidiaDriverVer]
-            cudaVersion = max(compatible_versions)
+
             commands += (
-                f"conda create -n roodmus-{V1} -c conda-forge -c anaconda python=3.10 "
-                f"fftw cudatoolkit gcc=11.4.0 cxx-compiler -y && ")
-            commands += f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/:$LD_LIBRARY_PATH && "
-            commands += f"conda activate roodmus-{V1} && "
-            commands += f"export CUDACXX=$CONDA_PREFIX/bin/nvcc && export CXX=$CONDA_PREFIX/bin/g++ && "
-            commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
-                         "cd ccpem-pipeliner && git checkout bedbedbe183ad497dbaa82a638f210d316ba9bae && "
-                         "pip install . git+https://github.com/ccpem/roodmus@jgreer/parakeetv0.6 openmm python-parakeet==0.6.6 && cd .. && ")
+                f"conda create -n roodmus-{V1} --override-channels -c conda-forge -c anaconda \
+python=3.10 fftw cudatoolkit=11.4 gcc=10 gxx=10 cxx-compiler ninja -y && "
+                f"conda activate roodmus-{V1} && "
+                f"export CC=$CONDA_PREFIX/bin/gcc && "
+                f"export CXX=$CONDA_PREFIX/bin/g++ && "
+                f"export CUDACXX=/usr/local/cuda-11.4/bin/nvcc && "
+                f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH && "
+                f"rm $CONDA_PREFIX/ssl/cert.pem && "
+                f"ln -s /home/root/ca-bundle.pem $CONDA_PREFIX/ssl/cert.pem && "
+                f"echo 'Environment ready' && pwd && gcc --version && g++ --version && nvidia-smi && "
+            )
+
+            commands += (
+                "rm -rf ccpem-pipeliner && "
+                "git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
+                "cd ccpem-pipeliner && "
+                "git checkout bedbedbe183ad497dbaa82a638f210d316ba9bae && "
+                "conda install -c conda-forge openmm -y && "
+                "pip install --no-cache-dir --no-binary :all: . "
+                "git+https://github.com/ccpem/roodmus@jgreer/parakeetv0.6 "
+                "python-parakeet==0.6.6 && "
+                "cd .. && "
+            )
+
             commands += "touch roodmus_installed"
+
             return commands
 
 
