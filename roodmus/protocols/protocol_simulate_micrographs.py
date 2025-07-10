@@ -42,12 +42,15 @@ from pyworkflow.object import Set
 from pyworkflow.protocol import STEPS_PARALLEL
 
 from pwem.protocols import EMProtocol
-from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates, Transform
+from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Particle, Acquisition, SetOfCoordinates, Transform, String, Boolean
+from pwem import ALIGN_PROJ
+from pwem.convert import euler_matrix
 import pyworkflow.utils as pwutils
 
 from xmipp_metadata.image_handler import ImageHandler
 
 from roodmus import Plugin
+from roodmus.utils import normalize_image
 
 
 class outputs(Enum):
@@ -184,6 +187,24 @@ class ProtSimulateMicrographs(EMProtocol):
                            "or two values separated by a white spaces (each micrograph will have a random "
                            "astigmatism taken within the range defined by the two numbers provided).")
 
+        form.addSection(label="Output particles")
+
+        form.addParam('boxSize', params.IntParam,
+                      default=128,
+                      label='Extracted particles box size (px)')
+
+        form.addParam('invertContrast', params.BooleanParam,
+                      default=True,
+                      label='Invert particle contrast?',
+                      help="When set to Yes, particles will be white on a dark background. Otherwise, particles will "
+                           "be black in a bright background.")
+
+        form.addParam('doNormalize', params.BooleanParam,
+                      default=True,
+                      label='Normalize images?',
+                      help="Determine whether images are normalized to have zero mean and standard deviation one in the "
+                           "background.")
+
         form.addParallelSection(threads=4, mpi=0)
 
     # --------------------------- STEPS functions ------------------------------
@@ -269,16 +290,32 @@ class ProtSimulateMicrographs(EMProtocol):
 
     def createOutputStep(self):
         pixelSize = self.pixelSize.get()
+        boxSize = self.boxSize.get()
+        if boxSize % 2 != 0:
+            boxSize += 1
+        halfSize = int(round(0.5 * boxSize))
+        invertContrast = self.invertContrast.get()
+        doNormalize = self.doNormalize.get()
+        nX = self.nX.get()
+        nY = self.nY.get()
+        boxSize = self.boxSize.get()
         outputMics = self._createSetOfMicrographs()
         outputCTFs = self._createSetOfCTF()
         outputCoords = self._createSetOfCoordinates(outputMics)
+        outputParticles = self._createSetOfParticles()
         outputMics.setSamplingRate(pixelSize)
 
         micId = 1
+        partId = 1
+        particleImgs = []
+        stack_file = self._getExtraPath("particle_stack.mrcs")
         for idm in range(self.numMic.get()):
             for micFile in glob(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), "*[!ctf].mrc")):
                 with open(replaceExt(micFile, "yaml")) as stream:
                     yaml_contents = yaml.safe_load(stream)
+
+                # Read mic
+                micImg = np.squeeze(ImageHandler().read(micFile).getData())
 
                 # Rename file
                 if idm > 0:
@@ -297,7 +334,7 @@ class ProtSimulateMicrographs(EMProtocol):
                 outputMic = Micrograph()
                 outputMic.setFileName(newMicFile)
                 outputMic.setSamplingRate(pixelSize)
-                outputMic.setAcquisition(aquisition)
+                outputMic.setAcquisition(aquisition.clone())
                 outputMic.setObjId(micId)
                 outputMic.setMicName(f"mic_{micId}")
 
@@ -308,38 +345,75 @@ class ProtSimulateMicrographs(EMProtocol):
                 ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"] + yaml_contents["microscope"]["lens"]["c_12"])
                 ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"] - yaml_contents["microscope"]["lens"]["c_12"])
                 ctf.setDefocusAngle(np.rad2deg(yaml_contents["microscope"]["lens"]["phi_12"]))
-                # outputMic.setCTF(ctf)
+                ctf.setPhaseShift(yaml_contents["microscope"]["phase_plate"]["phase_shift"])
+                outputMic.setCTF(ctf.clone())
                 outputCTFs.append(ctf)
 
-                # Output 3: Coordinates
+                # Output 3 - 4: Coordinates and Particles
                 for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
-                    algn = R.from_euler(angles=pick["orientation"], seq="ZYZ", degrees=False).as_matrix()
-                    mat = np.eye(4)
-                    mat[:3, :3] = algn
+                    cx, cy = int(round(pick["position"][0])), int(round(pick["position"][1]))
+                    # M = euler_matrix(pick["orientation"][0], pick["orientation"][1], pick["orientation"][2], "szyz")
+                    M = np.eye(4)
+                    # M[:3, :3] = R.from_euler('ZYZ', pick["orientation"], degrees=False).as_matrix()
+                    M[:3, :3] = R.from_rotvec(pick["orientation"]).as_matrix()
+                    M[:3, 3] = np.asarray([float(cx) - pick["position"][0], float(cy) - pick["position"][1], 0.0])
+                    M = np.linalg.inv(M)
                     tr = Transform()
-                    tr.setMatrix(mat)
+                    tr.setMatrix(M)
                     coord = Coordinate()
-                    coord.setX(int(round(pick["position"][0])))
-                    coord.setY(int(round(pick["position"][1])))
+                    coord.setX(cx)
+                    coord.setY(cy)
                     coord.setMicrograph(outputMic)
                     coord.setMicName(outputMic.getMicName())
                     coord.setMicId(outputMic.getObjId())
-                    coord.transformation = tr
                     outputCoords.append(coord)
 
+                    if ((cx + halfSize < nX) and (cx - halfSize > 0) and
+                        (cy + halfSize < nY) and (cy - halfSize > 0)):
+                        part = Particle()
+                        part.setLocation(partId, stack_file)
+                        part.setMicId(outputMic.getObjId())
+                        part.setCTF(ctf.clone())
+                        part.setTransform(tr.clone())
+                        part.setSamplingRate(pixelSize)
+                        part.setCoordinate(coord.clone())
+                        part.setAcquisition(aquisition.clone())
+
+                        particleImg = micImg[(cy - halfSize):(cy + halfSize), (cx - halfSize):(cx + halfSize)]
+
+                        if invertContrast:
+                            particleImg = -1. * particleImg
+
+                        if doNormalize:
+                            particleImg = normalize_image(particleImg)
+
+                        particleImgs.append(particleImg)
+
+                        if partId == 1:
+                            ImageHandler().write(particleImg[None, :, :], stack_file, overwrite=True)
+
+                        partId += 1
+
+                        outputParticles.append(part)
+
                 outputMics.append(outputMic)
-                outputMics.setAcquisition(aquisition)
+                outputMics.setAcquisition(aquisition.clone())
 
                 micId += 1
 
+        ImageHandler().write(np.stack(particleImgs, axis=0), stack_file, overwrite=True)
+
         outputCTFs.setMicrographs(outputMics)
         outputCoords.setMicrographs(outputMics)
-        outputCoords.setBoxSize(int(self.nX.get() / 10))
+        outputCoords.setBoxSize(boxSize)
+        outputParticles.setSamplingRate(pixelSize)
+        outputParticles.setHasCTF(True)
+        outputParticles.setAlignmentProj()
 
         if outputMics.getSize() == 0:
             raise ValueError(pwutils.redStr("No micrographs has been generated by Roodmus. Exiting..."))
 
-        self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
+        self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords, trueParticles=outputParticles)
         self._defineCtfRelation(outputMics, outputCTFs)
 
     # --------------------------- INFO functions -----------------------------------
