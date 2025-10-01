@@ -352,24 +352,23 @@ class ProtSimulateMicrographs(EMProtocol):
                 # Output 3 - 4: Coordinates and Particles
                 for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
                     cx, cy = int(round(pick["position"][0])), int(round(pick["position"][1]))
-                    # M = euler_matrix(pick["orientation"][0], pick["orientation"][1], pick["orientation"][2], "szyz")
-                    M = np.eye(4)
-                    # M[:3, :3] = R.from_euler('ZYZ', pick["orientation"], degrees=False).as_matrix()
-                    M[:3, :3] = R.from_rotvec(pick["orientation"]).as_matrix()
-                    M[:3, 3] = np.asarray([float(cx) - pick["position"][0], float(cy) - pick["position"][1], 0.0])
-                    M = np.linalg.inv(M)
-                    tr = Transform()
-                    tr.setMatrix(M)
-                    coord = Coordinate()
-                    coord.setX(cx)
-                    coord.setY(cy)
-                    coord.setMicrograph(outputMic)
-                    coord.setMicName(outputMic.getMicName())
-                    coord.setMicId(outputMic.getObjId())
-                    outputCoords.append(coord)
 
                     if ((cx + halfSize < nX) and (cx - halfSize > 0) and
                         (cy + halfSize < nY) and (cy - halfSize > 0)):
+                        M = np.eye(4)
+                        M[:3, :3] = R.from_rotvec(pick["orientation"]).as_matrix()
+                        M[:3, 3] = np.asarray([float(cx) - pick["position"][0], float(cy) - pick["position"][1], 0.0])
+                        M = np.linalg.inv(M)
+                        tr = Transform()
+                        tr.setMatrix(M)
+                        coord = Coordinate()
+                        coord.setX(cx)
+                        coord.setY(cy)
+                        coord.setMicrograph(outputMic.clone())
+                        coord.setMicName(outputMic.getMicName())
+                        coord.setMicId(outputMic.getObjId())
+                        outputCoords.append(coord.clone())
+
                         part = Particle()
                         part.setLocation(partId, stack_file)
                         part.setMicId(outputMic.getObjId())
@@ -394,9 +393,9 @@ class ProtSimulateMicrographs(EMProtocol):
 
                         partId += 1
 
-                        outputParticles.append(part)
+                        outputParticles.append(part.clone())
 
-                outputMics.append(outputMic)
+                outputMics.append(outputMic.clone())
                 outputMics.setAcquisition(aquisition.clone())
 
                 micId += 1
