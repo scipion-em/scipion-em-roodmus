@@ -116,6 +116,11 @@ class ProtSimulateMicrographs(EMProtocol):
                       validators=[params.Positive],
                       label="Micrograph pixel size")
 
+        group.addParam("boxSize", params.IntParam,
+                      default=128,
+                      validators=[params.Positive],
+                      label="Coordinate box size")
+        
         group.addParam("nX", params.IntParam,
                       default=1000,
                       validators=[params.Positive],
@@ -280,7 +285,7 @@ class ProtSimulateMicrographs(EMProtocol):
 
         outputCTFs.setMicrographs(outputMics)
         outputCoords.setMicrographs(outputMics)
-        outputCoords.setBoxSize(int(self.nX.get() / 10))
+        outputCoords.setBoxSize(self.boxSize.get())
 
         self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
         self._defineCtfRelation(outputMics, outputCTFs)
