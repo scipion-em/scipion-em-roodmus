@@ -266,8 +266,8 @@ class ProtSimulateMicrographs(EMProtocol):
             for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
                 # mat = R.from_euler(angles=pick["orientations"], seq="ZYZ", degrees=False).as_matrix()
                 coord = Coordinate()
-                coord.setX(int(round(pick["position"][0])))
-                coord.setY(int(round(pick["position"][1])))
+                coord.setX(int(round(pick["position"][0] / pixelSize)))
+                coord.setY(int(round(pick["position"][1] / pixelSize)))
                 coord.setMicrograph(outputMic)
                 coord.setMicName(outputMic.getMicName())
                 coord.setMicId(outputMic.getObjId())
