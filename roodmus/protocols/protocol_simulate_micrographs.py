@@ -204,7 +204,10 @@ class ProtSimulateMicrographs(EMProtocol):
         centreY = round(0.5 * nY)
         centreZ = round(0.5 * iceThickness)
         defocusRange = [float(s) for s in self.defocusRange.get().split(' ')]
-        defocusAverage = np.random.uniform(defocusRange[0], defocusRange[1])
+        defocusAverage = np.random.uniform(defocusRange[0], defocusRange[1], size=numMic)
+        defocusAverage = " ".join(map(str, defocusAverage))
+        defocusStdDev = [1e-6 for _ in range(numMic)]
+        defocusStdDev = " ".join(map(str, defocusStdDev))
 
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
                 f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
@@ -213,7 +216,7 @@ class ProtSimulateMicrographs(EMProtocol):
                 f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
                 f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
                 f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
-                f"--c_10 {defocusAverage} --c_10_stddev 1e-6")
+                f"--c_10 {defocusAverage} --c_10_stddev {defocusStdDev}")
                 # f"--model {self._micModel[self.micModel.get()]}")  # FIXME: Currently a bug in Roodmus, to be added when fixed
 
         if self.usesGpu():
