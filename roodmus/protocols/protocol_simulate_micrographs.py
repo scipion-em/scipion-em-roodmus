@@ -171,9 +171,17 @@ class ProtSimulateMicrographs(EMProtocol):
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
+        # To determine the number of steps
+        numMic = self.numMic.get()
+        base = numMic // 100
+        remainder = numMic % 100
+        vector = np.full(100, base)
+        vector[:remainder] += 1
+
         # Insert processing steps
         self._insertFunctionStep(self.sampleConformationsStep)
-        self._insertFunctionStep(self.simulateMicrographsStep)
+        for partNumMics in vector:
+            self._insertFunctionStep(self.simulateMicrographsStep, partNumMics)
         self._insertFunctionStep(self.createOutputStep)
 
     def sampleConformationsStep(self):
@@ -193,8 +201,7 @@ class ProtSimulateMicrographs(EMProtocol):
             copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
                                                               f"conformation_000000.{getExt(topFile)}")))
 
-    def simulateMicrographsStep(self):
-        numMic = self.numMic.get()
+    def simulateMicrographsStep(self, numMic):
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
         iceThickness = self.iceThickness.get()
