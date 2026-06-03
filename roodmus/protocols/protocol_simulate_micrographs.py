@@ -29,6 +29,7 @@
 import os
 from glob import glob
 import yaml
+import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from enum import Enum
@@ -165,23 +166,27 @@ class ProtSimulateMicrographs(EMProtocol):
 
         form.addSection(label="Microscope lens")
 
-        form.addParam('defocusAverage', params.FloatParam,
-                      default=-15000,
-                      label='Average defocus (angstrom)',
-                      help="In CryoEM, this value is negative (underfocus). Positive values (overfocus) are also "
-                           "allowed")
-
-        form.addParam('defocusSTD', params.FloatParam,
-                      default=5000,
-                      label='Defocus standard deviation (angstrom)')
+        form.addParam('defocusRange', params.StringParam,
+                      default="-10000 -15000",
+                      label='Defocus range of variation (angstrom)',
+                      help="Defocus values will be drawn from an uniform distribution between the values specified."
+                           "In CryoEM, this value is negative (underfocus). Positive values (overfocus) are also allowed.")
 
         form.addParallelSection(threads=4, mpi=0)
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
+        # To determine the number of steps
+        numMic = self.numMic.get()
+        base = numMic // 100
+        remainder = numMic % 100
+        vector = np.full(100, base)
+        vector[:remainder] += 1
+
         # Insert processing steps
         self._insertFunctionStep(self.sampleConformationsStep)
-        self._insertFunctionStep(self.simulateMicrographsStep)
+        for partNumMics in vector:
+            self._insertFunctionStep(self.simulateMicrographsStep, partNumMics)
         self._insertFunctionStep(self.createOutputStep)
 
     def sampleConformationsStep(self):
@@ -201,8 +206,7 @@ class ProtSimulateMicrographs(EMProtocol):
             copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
                                                               f"conformation_000000.{getExt(topFile)}")))
 
-    def simulateMicrographsStep(self):
-        numMic = self.numMic.get()
+    def simulateMicrographsStep(self, numMic):
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
         iceThickness = self.iceThickness.get()
@@ -211,6 +215,11 @@ class ProtSimulateMicrographs(EMProtocol):
         centreX = round(0.5 * nX)
         centreY = round(0.5 * nY)
         centreZ = round(0.5 * iceThickness)
+        defocusRange = [float(s) for s in self.defocusRange.get().split(' ')]
+        defocusAverage = np.random.uniform(defocusRange[0], defocusRange[1], size=numMic)
+        defocusAverage = " ".join(map(str, defocusAverage))
+        defocusStdDev = [1e-6 for _ in range(numMic)]
+        defocusStdDev = " ".join(map(str, defocusStdDev))
 
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
                 f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
@@ -219,7 +228,7 @@ class ProtSimulateMicrographs(EMProtocol):
                 f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
                 f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
                 f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
-                f"--c_10 {self.defocusAverage.get()} --c_10_stddev {self.defocusSTD.get()} ")
+                f"--c_10 {defocusAverage} --c_10_stddev {defocusStdDev}")
                 # f"--model {self._micModel[self.micModel.get()]}")  # FIXME: Currently a bug in Roodmus, to be added when fixed
 
         if self.usesGpu():
