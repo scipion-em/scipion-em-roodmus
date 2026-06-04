@@ -29,6 +29,8 @@
 import os
 from glob import glob
 import yaml
+import numpy as np
+import subprocess
 from scipy.spatial.transform import Rotation as R
 
 from enum import Enum
@@ -37,11 +39,18 @@ from pyworkflow.constants import BETA
 import pyworkflow.protocol.params as params
 from pyworkflow.utils import Message, copyFile, getExt, replaceExt
 from pyworkflow.object import Set
+from pyworkflow.protocol import STEPS_PARALLEL
 
 from pwem.protocols import EMProtocol
-from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Acquisition, SetOfCoordinates
+from pwem.objects import Micrograph, SetOfMicrographs, CTFModel, Coordinate, Particle, Acquisition, SetOfCoordinates, Transform, String, Boolean
+from pwem import ALIGN_PROJ
+from pwem.convert import euler_matrix
+import pyworkflow.utils as pwutils
+
+from xmipp_metadata.image_handler import ImageHandler
 
 from roodmus import Plugin
+from roodmus.utils import normalize_image
 
 
 class outputs(Enum):
@@ -56,6 +65,7 @@ class ProtSimulateMicrographs(EMProtocol):
     _devStatus = BETA
     _micModel = ["talos", "krios"]
     _possibleOutputs = outputs
+    stepsExecutionMode = STEPS_PARALLEL
 
     # -------------------------- DEFINE param functions ----------------------
     def _defineParams(self, form):
@@ -126,17 +136,17 @@ class ProtSimulateMicrographs(EMProtocol):
                       validators=[params.Positive],
                       label="Micrograph size along Y direction")
 
-        group.addParam("mag", params.FloatParam,
-                       default=50000,
-                       experLevel=params.LEVEL_ADVANCED,
-                       validators=[params.Positive],
-                       label="Magnification rate")
-
-        group.addParam("q0", params.FloatParam,
-                       default=0.07,
-                       experLevel=params.LEVEL_ADVANCED,
-                       validators=[params.Positive],
-                       label="Amplitude contrast")
+        # group.addParam("mag", params.FloatParam,
+        #                default=50000,
+        #                experLevel=params.LEVEL_ADVANCED,
+        #                validators=[params.Positive],
+        #                label="Magnification rate")
+        #
+        # group.addParam("q0", params.FloatParam,
+        #                default=0.07,
+        #                experLevel=params.LEVEL_ADVANCED,
+        #                validators=[params.Positive],
+        #                label="Amplitude contrast")
 
         group = form.addGroup("Micrograph beam")
 
@@ -170,14 +180,53 @@ class ProtSimulateMicrographs(EMProtocol):
                       default=5000,
                       label='Defocus standard deviation (angstrom)')
 
+        form.addParam('astigmatism', params.NumericListParam,
+                      default="10 80",
+                      label='The 2-fold astigmatism (angstrom)',
+                      help="You can provide here a single value (all micrographs will have the same astigmatism) "
+                           "or two values separated by a white spaces (each micrograph will have a random "
+                           "astigmatism taken within the range defined by the two numbers provided).")
+
+        form.addSection(label="Output particles")
+
+        form.addParam('boxSize', params.IntParam,
+                      default=128,
+                      label='Extracted particles box size (px)')
+
+        form.addParam('invertContrast', params.BooleanParam,
+                      default=True,
+                      label='Invert particle contrast?',
+                      help="When set to Yes, particles will be white on a dark background. Otherwise, particles will "
+                           "be black in a bright background.")
+
+        form.addParam('doNormalize', params.BooleanParam,
+                      default=True,
+                      label='Normalize images?',
+                      help="Determine whether images are normalized to have zero mean and standard deviation one in the "
+                           "background.")
+
         form.addParallelSection(threads=4, mpi=0)
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
+        numMic = self.numMic.get()
+
+        # Prepare defocus (uniform sampling forced)
+        defocusRange = [float(s) for s in self.defocusRange.get().split(' ')]
+        defocusAverage = np.random.uniform(defocusRange[0], defocusRange[1], size=numMic)
+        defocusStdDev = [1e-6 for _ in range(numMic)]
+
         # Insert processing steps
-        self._insertFunctionStep(self.sampleConformationsStep)
-        self._insertFunctionStep(self.simulateMicrographsStep)
-        self._insertFunctionStep(self.createOutputStep)
+        deps_preprocessing = self._insertFunctionStep(self.sampleConformationsStep, prerequisites=[])
+
+        deps_simulate = []
+        needsGPU = self.usesGpu()
+        for idm in range(numMic):
+            deps_simulate.append(self._insertFunctionStep(self.simulateMicrographsStep,
+                                                          idm, str(defocusAverage[idm]), str(defocusStdDev[idm]),
+                                                          prerequisites=deps_preprocessing, needsGPU=needsGPU))
+
+        self._insertFunctionStep(self.createOutputStep, prerequisites=deps_simulate)
 
     def sampleConformationsStep(self):
         trajFilesDir = self.trajFiles.get()
@@ -196,8 +245,7 @@ class ProtSimulateMicrographs(EMProtocol):
             copyFile(topFile, self._getExtraPath(os.path.join('simulated_conformations',
                                                               f"conformation_000000.{getExt(topFile)}")))
 
-    def simulateMicrographsStep(self):
-        numMic = self.numMic.get()
+    def simulateMicrographsStep(self, idm, defocusAverage, defocusStdDev):
         numPart = self.numPart.get()
         pixelSize = self.pixelSize.get()
         iceThickness = self.iceThickness.get()
@@ -207,82 +255,174 @@ class ProtSimulateMicrographs(EMProtocol):
         centreY = round(0.5 * nY)
         centreZ = round(0.5 * iceThickness)
 
+        astigmatism = list(map(float, self.astigmatism.get().split(' ')))
+        phi_12 = 0.0 if min(astigmatism) == max(astigmatism) == 0.0 else np.random.uniform(0, np.pi)
+        astigmatism = np.random.uniform(min(astigmatism), max(astigmatism))
+
         args = (f"--pdb_dir {self._getExtraPath('simulated_conformations')} "
-                f"--mrc_dir {self._getExtraPath('simulated_mics')} -n {numMic} -m {numPart} "
+                f"--mrc_dir {self._getExtraPath(f'simulated_mic_{idm:05}')} -n 1 "
                 f"--pixel_size {pixelSize} --nx {nX} --ny {nY} --box_x {pixelSize * nX} "
                 f"--box_y {pixelSize * nY} --box_z {iceThickness} --centre_x {pixelSize * centreX} "
                 f"--centre_y {pixelSize * centreY} --centre_z {centreZ} --cuboid_length_x {pixelSize * nX} "
                 f"--cuboid_length_y {pixelSize * nY} --cuboid_length_z {iceThickness} --tqdm "
-                f"--nproc {self.numberOfThreads.get()} --electrons_per_angstrom {self.dose.get()} "
-                f"--c_10 {self.defocusAverage.get()} --c_10_stddev {self.defocusSTD.get()} ")
+                f"--nproc 20 --electrons_per_angstrom {self.dose.get()} "
+                f"--c_10 {defocusAverage} --c_10_stddev {defocusStdDev} "
+                f"--c_12 {-astigmatism} --phi_12 {phi_12} ")
                 # f"--model {self._micModel[self.micModel.get()]}")  # FIXME: Currently a bug in Roodmus, to be added when fixed
 
         if self.usesGpu():
-            gpuID = [str(elem) for elem in self.getGpuList()][0]
-            args += f' --device "gpu" --gpu_id {gpuID}'
+            args += f' --device gpu --gpu_id  %(GPU)s'
         else:
-            args += f' --device "cpu"'
+            args += f' --device cpu'
 
         program = Plugin.getRoodmusProgram("run_parakeet")
+        program_ctf = Plugin.getParakeetProgram("ctf")
 
-        self.runJob(program, args)
+        for currNumPart in range(numPart, 1, -10):
+            args_with_particles = args +  f' -m {currNumPart}'
+            try:
+                self.runJob(program, args_with_particles)
+                config_file = self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', f'{0:06}.yaml'))
+                ctf_file = self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', f'{0:06}_ctf.mrc'))
+                args_ctf = f'-c {config_file} -o {ctf_file}'
+                self.runJob(program_ctf, args_ctf)
+                ctf = ImageHandler().read(ctf_file).getData()
+                ImageHandler().write(ctf, ctf_file, overwrite=True)
+                return
+            except subprocess.CalledProcessError as e:
+                pwutils.cleanPattern(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}', "*")))
+                if currNumPart - 10 > 0:
+                    print(pwutils.yellowStr(f"Could not place the specified number of particles ({numPart}) in "
+                                            f"micrograph #{idm}. Retrying Roodmus with {currNumPart - 10} particles"), flush=True)
+                else:
+                    print(pwutils.redStr(e), flush=True)
 
     def createOutputStep(self):
         pixelSize = self.pixelSize.get()
+        boxSize = self.boxSize.get()
+        if boxSize % 2 != 0:
+            boxSize += 1
+        halfSize = int(round(0.5 * boxSize))
+        invertContrast = self.invertContrast.get()
+        doNormalize = self.doNormalize.get()
+        nX = self.nX.get()
+        nY = self.nY.get()
+        boxSize = self.boxSize.get()
         outputMics = self._createSetOfMicrographs()
         outputCTFs = self._createSetOfCTF()
         outputCoords = self._createSetOfCoordinates(outputMics)
+        outputParticles = self._createSetOfParticles()
         outputMics.setSamplingRate(pixelSize)
 
         micId = 1
-        for micFile in glob(self._getExtraPath(os.path.join('simulated_mics'), "*.mrc")):
-            with open(replaceExt(micFile, "yaml")) as stream:
-                yaml_contents = yaml.safe_load(stream)
+        partId = 1
+        particleImgs = []
+        stack_file = self._getExtraPath("particle_stack.mrcs")
+        for idm in range(self.numMic.get()):
+            for micFile in glob(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), "*[!ctf].mrc")):
+                with open(replaceExt(micFile, "yaml")) as stream:
+                    yaml_contents = yaml.safe_load(stream)
 
-            # Output 1: Micrographs
-            aquisition = Acquisition()
-            aquisition.setMagnification(self.mag.get())
-            aquisition.setVoltage(yaml_contents["microscope"]["beam"]["energy"])
-            aquisition.setDosePerFrame(yaml_contents["microscope"]["beam"]["electrons_per_angstrom"])
-            aquisition.setSphericalAberration(yaml_contents["microscope"]["lens"]["c_c"])
-            aquisition.setAmplitudeContrast(self.q0.get())
-            outputMic = Micrograph()
-            outputMic.setFileName(micFile)
-            outputMic.setSamplingRate(pixelSize)
-            outputMic.setAcquisition(aquisition)
-            outputMic.setObjId(micId)
-            outputMic.setMicName(f"mic_{micId}")
+                # Read mic
+                micImg = np.squeeze(ImageHandler().read(micFile).getData())
 
-            # Output 2: CTFs
-            ctf = CTFModel()
-            ctf.setMicrograph(outputMic)
-            ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"])
-            ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"])
-            ctf.setDefocusAngle(yaml_contents["microscope"]["lens"]["phi_12"])
-            # outputMic.setCTF(ctf)
-            outputCTFs.append(ctf)
+                # Rename file
+                if idm > 0:
+                    newMicFile = os.path.join(os.path.dirname(micFile), f"{idm:06}.mrc")
+                    pwutils.moveFile(micFile, newMicFile)
+                else:
+                    newMicFile = micFile
 
-            # Output 3: Coordinates
-            for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
-                # mat = R.from_euler(angles=pick["orientations"], seq="ZYZ", degrees=False).as_matrix()
-                coord = Coordinate()
-                coord.setX(int(round(pick["position"][0])))
-                coord.setY(int(round(pick["position"][1])))
-                coord.setMicrograph(outputMic)
-                coord.setMicName(outputMic.getMicName())
-                coord.setMicId(outputMic.getObjId())
-                outputCoords.append(coord)
+                # Output 1: Micrographs
+                aquisition = Acquisition()
+                aquisition.setMagnification(1.0)
+                aquisition.setVoltage(yaml_contents["microscope"]["beam"]["energy"])
+                aquisition.setDosePerFrame(yaml_contents["microscope"]["beam"]["electrons_per_angstrom"])
+                aquisition.setSphericalAberration(yaml_contents["microscope"]["lens"]["c_c"])
+                aquisition.setAmplitudeContrast(0.0)
+                outputMic = Micrograph()
+                outputMic.setFileName(newMicFile)
+                outputMic.setSamplingRate(pixelSize)
+                outputMic.setAcquisition(aquisition.clone())
+                outputMic.setObjId(micId)
+                outputMic.setMicName(f"mic_{micId}")
 
-            outputMics.append(outputMic)
-            outputMics.setAcquisition(aquisition)
+                # Output 2: CTFs
+                ctf = CTFModel()
+                ctf.setMicrograph(outputMic)
+                ctf.setPsdFile(self._getExtraPath(os.path.join(f'simulated_mic_{idm:05}'), f"{0:06}_ctf.mrc"))
+                ctf.setDefocusU(-yaml_contents["microscope"]["lens"]["c_10"] + yaml_contents["microscope"]["lens"]["c_12"])
+                ctf.setDefocusV(-yaml_contents["microscope"]["lens"]["c_10"] - yaml_contents["microscope"]["lens"]["c_12"])
+                ctf.setDefocusAngle(np.rad2deg(yaml_contents["microscope"]["lens"]["phi_12"]))
+                ctf.setPhaseShift(0.0)
+                outputMic.setCTF(ctf.clone())
+                outputCTFs.append(ctf)
 
-            micId += 1
+                # Output 3 - 4: Coordinates and Particles
+                for pick in yaml_contents["sample"]["molecules"]["local"][0]["instances"]:
+                    cx, cy = int(round(pick["position"][0])), int(round(pick["position"][1]))
+
+                    if ((cx + halfSize < nX) and (cx - halfSize > 0) and
+                        (cy + halfSize < nY) and (cy - halfSize > 0)):
+                        M = np.eye(4)
+                        M[:3, :3] = R.from_rotvec(pick["orientation"]).as_matrix()
+                        M[:3, 3] = np.asarray([float(cx) - pick["position"][0], float(cy) - pick["position"][1], 0.0])
+                        M = np.linalg.inv(M)
+                        tr = Transform()
+                        tr.setMatrix(M)
+                        coord = Coordinate()
+                        coord.setX(cx)
+                        coord.setY(cy)
+                        coord.setMicrograph(outputMic.clone())
+                        coord.setMicName(outputMic.getMicName())
+                        coord.setMicId(outputMic.getObjId())
+                        outputCoords.append(coord.clone())
+
+                        part = Particle()
+                        part.setLocation(partId, stack_file)
+                        part.setMicId(outputMic.getObjId())
+                        part.setCTF(ctf.clone())
+                        part.setTransform(tr.clone())
+                        part.setSamplingRate(pixelSize)
+                        part.setCoordinate(coord.clone())
+                        part.setAcquisition(aquisition.clone())
+
+                        particleImg = micImg[(cy - halfSize):(cy + halfSize), (cx - halfSize):(cx + halfSize)]
+
+                        if invertContrast:
+                            particleImg = -1. * particleImg
+
+                        if doNormalize:
+                            particleImg = normalize_image(particleImg)
+
+                        particleImgs.append(particleImg)
+
+                        if partId == 1:
+                            ImageHandler().write(particleImg[None, :, :], stack_file, overwrite=True)
+
+                        partId += 1
+
+                        outputParticles.append(part.clone())
+
+                outputMics.append(outputMic.clone())
+                outputMics.setAcquisition(aquisition.clone())
+
+                micId += 1
+
+        ImageHandler().write(np.stack(particleImgs, axis=0), stack_file, overwrite=True)
 
         outputCTFs.setMicrographs(outputMics)
         outputCoords.setMicrographs(outputMics)
-        outputCoords.setBoxSize(int(self.nX.get() / 10))
+        outputCoords.setBoxSize(boxSize)
+        outputParticles.setSamplingRate(pixelSize)
+        outputParticles.setHasCTF(True)
+        outputParticles.setAlignmentProj()
+        outputParticles.setAcquisition(aquisition.clone())
 
-        self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords)
+        if outputMics.getSize() == 0:
+            raise ValueError(pwutils.redStr("No micrographs has been generated by Roodmus. Exiting..."))
+
+        self._defineOutputs(simMics=outputMics, trueCTFs=outputCTFs, trueCoords=outputCoords, trueParticles=outputParticles)
         self._defineCtfRelation(outputMics, outputCTFs)
 
     # --------------------------- INFO functions -----------------------------------
@@ -294,7 +434,7 @@ class ProtSimulateMicrographs(EMProtocol):
 
         if self.isFinished():
             numMic = self.simMics.getSize()
-            numPart = self.numPart.get() if self.trajFiles.get() else 1
+            numPart = self.numPart.get()
             pixelSize = self.pixelSize.get()
             numConf = self.numConf.get()
             summary.append(f"A total of {numMic} micrographs have been generated with the following metadata: ")
