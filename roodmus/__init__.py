@@ -89,35 +89,9 @@ class Plugin(pwem.Plugin):
     def defineBinaries(cls, env):
 
         def getRoodmusInstallationCommands():
-            nvidiaNVCC = False
-            try:
-                nvidiaDriverVer = subprocess.Popen(["nvidia-smi",
-                                                    "--query-gpu=driver_version",
-                                                    "--format=csv,noheader"],
-                                                   env=cls.getEnviron(),
-                                                   stdout=subprocess.PIPE
-                                                   ).stdout.read().decode('utf-8').split(".")[0]
-                nvidiaNVCC = subprocess.run(['nvcc', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            except (ValueError, TypeError, FileNotFoundError):
-                print("NVCC not found in your system, installing it in the environment...")
-
             commands = cls.getCondaActivationCmd() + " "
-            if nvidiaNVCC:
-                commands += f"conda create -n roodmus-{V1} -c conda-forge fftw python=3.10 -y && "
-            else:
-                compatible_versions = [cuda for drv, cuda in driver_cuda_compatibility.items() if
-                                       drv <= nvidiaDriverVer]
-                cudaVersion = max(compatible_versions)
-                commands += (
-                    f"conda create -n roodmus-{V1} -c conda-forge -c nvidia/label/cuda-{cudaVersion} python=3.10 "
-                    f"fftw cuda={cudaVersion} gcc=11.4.0 cxx-compiler -y && ")
-            commands += f"conda activate roodmus-{V1} && pip install setuptools==68.2.2 && "
-            if not nvidiaNVCC:
-                commands += f"export CUDACXX=$CONDA_PREFIX/bin/nvcc && export CXX=$CONDA_PREFIX/bin/g++ && "
-                commands += f"export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/:$LD_LIBRARY_PATH && "
-            commands += ("git clone https://gitlab.com/ccpem/ccpem-pipeliner.git && "
-                         "cd ccpem-pipeliner && git checkout bedbedbe183ad497dbaa82a638f210d316ba9bae && "
-                         "pip install . git+https://github.com/ccpem/roodmus@jgreer/parakeetv0.6 openmm python-parakeet==0.6.6 && cd .. && ")
+            commands += f"conda create -n roodmus-{V1} -c conda-forge fftw python=3.10 -y && "
+            commands += f'conda activate roodmus-{V1} && pip install "roodmus[gpu] @ git+https://github.com/ccpem/roodmus.git@development" && '
             commands += "touch roodmus_installed"
             return commands
 
